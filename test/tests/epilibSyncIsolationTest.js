@@ -134,7 +134,11 @@ describe("EpiLib sync isolation", function () {
 			await streamer._update();
 			assert.isFalse(legacyKey.called);
 			let message = JSON.parse(streamer._socket.send.firstCall.args[0]);
-			assert.deepEqual(message.subscriptions, [{ topics: ['styles', 'translators'] }]);
+			assert.deepEqual(message.subscriptions, [
+				{ topics: ['styles', 'translators'] },
+				{ topics: ['plugin-blocklist'] }
+			]);
+			assert.notInclude(streamer._socket.send.firstCall.args[0], 'obsolete-cloud-key');
 			Zotero.Prefs.set('automaticScraperUpdates', false);
 			assert.isFalse(streamer._isEnabled());
 		}

@@ -313,6 +313,13 @@ function modify_omni {
 		'targetApplications: \[appEntry\],
 		uninstall: getProperty(update, "uninstall", "boolean"),' modules/addons/AddonUpdateChecker.sys.mjs
 	
+	# Back the extension blocklist with a provider registered by Zotero.Plugins instead of the
+	# RemoteSettings blocklist, which isn't available in Zotero. Every toolkit blocklist check
+	# (install, update check, app-upgrade reconciliation) then computes an addon's state from
+	# Zotero's blocklist rather than resetting it to STATE_NOT_BLOCKED.
+	replace_line 'this.ExtensionBlocklist = ExtensionBlocklistMLBF;' 'this.ExtensionBlocklist = ZoteroExtensionBlocklist || ExtensionBlocklistMLBF;' modules/Blocklist.sys.mjs
+	cat "$APP_ROOT_DIR/assets/zoteroExtensionBlocklist.js" >> modules/Blocklist.sys.mjs
+	
 	# Prevent automatic installation of default theme
 	# (chrome/toolkit/content/mozapps/extensions/default-theme, removed above)
 	replace_line 'this.maybeInstallBuiltinAddon\(' 'if (false) this.maybeInstallBuiltinAddon(' modules/addons/XPIProvider.sys.mjs
@@ -425,8 +432,14 @@ function modify_omni {
 	# Hide unsigned-addon warning
 	replace_line 'export function isUnsignedWarningMessageDisabled\(\) \{' \
 		'export function isUnsignedWarningMessageDisabled() {if (true) return true;' $file
-	# Use our own localized string for blocked plugin notification
-	replace_line 'details-notification-hard-blocked-\$\{typeSuffix\}' 'plugins-blocked-plugin' $file
+	# Use our own localized string for blocked plugin notification, including the reason from
+	# the blocklist
+	replace_line 'const \{ STATE_BLOCKED, STATE_SOFTBLOCKED \} = Ci.nsIBlocklistService;' \
+		'const { STATE_BLOCKED, STATE_SOFTBLOCKED } = Ci.nsIBlocklistService;
+  let { Zotero } = ChromeUtils.importESModule("chrome:\/\/zotero\/content\/zotero.mjs");
+  let blockReason = Zotero.Plugins.getBlockedPluginReason(addon.id, addon.version);' $file
+	replace_line 'messageId: `details-notification-hard-blocked-\$\{typeSuffix\}`,' \
+		'messageId: blockReason ? "plugins-blocked-plugin-reason" : "plugins-blocked-plugin", messageArgs: { reason: blockReason },' $file
 	# Hide Recommendations tab in sidebar and recommendations in main pane
 	replace_line 'function isDiscoverEnabled\(\) \{' 'function isDiscoverEnabled() {return false;' $file
 
@@ -450,6 +463,10 @@ function modify_omni {
 		'viewType !== "detail" \&\& viewType !== "shortcuts" \&\& viewType !== "updates";' \
 		chrome/toolkit/content/mozapps/extensions/components/addon-page-header.mjs
 
+	# Hide the Firefox support link in the Troubleshooting Mode warning
+	remove_line 'supportPage: "diagnose-firefox-issues-using-troubleshoot-mode",' \
+		chrome/toolkit/content/mozapps/extensions/components/global-warnings.mjs
+
 	# Customize empty-list message
 	replace_line 'createEmptyListMessage\(\) {' 'createEmptyListMessage() {
         var p = document.createElement("p");
@@ -465,6 +482,8 @@ function modify_omni {
 	replace_line 'Add-on' 'Plugin' localization/en-US/toolkit/about/aboutAddons.ftl
 	replace_line 'add-ons' 'plugins' localization/en-US/toolkit/about/aboutAddons.ftl
 	replace_line 'Select add-on to install' 'Select plugin to install' localization/en-US/toolkit/about/aboutAddons.ftl
+	replace_line 'All plugins have been disabled by Troubleshoot Mode\.' \
+		'All plugins were disabled at startup by Troubleshooting Mode.' localization/en-US/toolkit/about/aboutAddons.ftl
 	
 	replace_line 'pref\("extensions.htmlaboutaddons.recommendations.enabled".+' 'pref("extensions.htmlaboutaddons.recommendations.enabled", false);' greprefs.js
 	

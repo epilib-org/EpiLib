@@ -345,7 +345,7 @@ class EditorInstance {
 	}
 
 	focus() {
-		this._iframeWindow.focus();
+		Zotero.Utilities.Internal.focusIframeWindow(this._iframeWindow);
 		this._postMessage({ action: 'focus' });
 	}
 
@@ -755,6 +755,12 @@ class EditorInstance {
 					this._showInLibrary(this._item.id);
 					return;
 				}
+				case 'openTab': {
+					await this._ensureNoteCreated();
+					let zp = this._getMainWindow()?.ZoteroPane;
+					zp?.openNote(this._item.id, { openInWindow: false });
+					return;
+				}
 				case 'openWindow': {
 					// TODO: Can we can avoid creating empty note just to open it in a new window?
 					await this._ensureNoteCreated();
@@ -1003,7 +1009,7 @@ class EditorInstance {
 						if (item.checked) {
 							menuitem.setAttribute('type', 'checkbox');
 						}
-						menuitem.toggleAttribute('checked', item.checked);
+						menuitem.toggleAttribute('checked', !!item.checked);
 						menuitem.addEventListener('command', () => {
 							if (item.name === 'insertImage') {
 								return this._iframeWindow.eval('openImageFilePicker()');

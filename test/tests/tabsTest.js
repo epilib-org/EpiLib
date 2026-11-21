@@ -193,7 +193,8 @@ describe("Zotero_Tabs", function() {
 			let { collectionsView } = zp;
 			await collectionsView.selectByID('C' + collection1.id);
 			let menu = doc.getElementById('zotero-collectionmenu');
-			let rowEl = collectionsView.tree.getRowElement(
+			let rowEl = getVisibleRowElement(
+				collectionsView,
 				collectionsView.getRowIndexByID('C' + collection2.id)
 			);
 			let shown = new Promise(resolve => menu.addEventListener('popupshown', resolve, { once: true }));
@@ -208,6 +209,105 @@ describe("Zotero_Tabs", function() {
 			await waitForLibraryView(newTabs[0].id);
 		});
 		
+		it("should keep a pinned tab at the start of the tab bar until it's unpinned", async function () {
+			let { id } = await addLibraryTab({ collections: ['C' + collection2.id] });
+			try {
+				tabs.setPinned(id, true);
+				assert.equal(tabs._tabs[0].id, id);
+				assert.isFalse(tabs.canClose(id));
+				let newID = tabs.addLibraryTab({ index: 0, select: false });
+				assert.equal(tabs._tabs[1].id, newID);
+			}
+			finally {
+				tabs.setPinned(id, false);
+			}
+			assert.equal(tabs._tabs[0].id, id);
+			assert.isTrue(tabs.canClose(id));
+		});
+
+		it("should reorder pinned tabs only among themselves", async function () {
+			let { id: id1 } = await addLibraryTab();
+			let { id: id2 } = await addLibraryTab();
+			try {
+				tabs.setPinned(id1, true);
+				tabs.setPinned(id2, true);
+				tabs.move(id2, 0);
+				assert.deepEqual(tabs._tabs.slice(0, 2).map(tab => tab.id), [id2, id1]);
+				tabs.move(id2, tabs._tabs.length);
+				assert.deepEqual(tabs._tabs.slice(0, 2).map(tab => tab.id), [id1, id2]);
+			}
+			finally {
+				tabs.setPinned(id1, false);
+				tabs.setPinned(id2, false);
+			}
+		});
+
+		it("should keep an unpinned tab dragged in the tabs menu after the pinned tabs", async function () {
+			let { id: pinnedID } = await addLibraryTab();
+			let { id } = await addLibraryTab();
+			tabs.setPinned(pinnedID, true);
+			let panel = tabs.tabsMenuPanel;
+			try {
+				let shown = new Promise(resolve => panel.addEventListener('popupshown', resolve, { once: true }));
+				tabs.showTabsMenu(true);
+				await shown;
+				let getRow = tabID => panel.querySelector(`.row[data-tab-id="${tabID}"]`);
+				let dataTransfer = new win.DataTransfer();
+				let fire = (target, type) => target.dispatchEvent(
+					new win.DragEvent(type, { bubbles: true, cancelable: true, dataTransfer })
+				);
+				fire(getRow(id), 'dragstart');
+				// The dragged row becomes the placeholder after a timeout
+				await Zotero.Promise.delay(10);
+				fire(getRow(pinnedID), 'dragover');
+				assert.isTrue(
+					!!(getRow(pinnedID).compareDocumentPosition(getRow(id)) & win.Node.DOCUMENT_POSITION_FOLLOWING)
+				);
+				fire(getRow(id), 'dragend');
+			}
+			finally {
+				tabs.showTabsMenu(false);
+				tabs.setPinned(pinnedID, false);
+			}
+		});
+
+		it("should keep a pinned reader tab pinned when it's unloaded", async function () {
+			let reader = await Zotero.Reader.open(attachment.id);
+			await reader._initPromise;
+			tabs.setPinned(reader.tabID, true);
+			tabs.select(tabs._tabs.find(tab => tabs.isLibraryTab(tab.id)).id);
+
+			tabs.unload(reader.tabID);
+			let { tab, tabIndex } = tabs._getTab(reader.tabID);
+			assert.equal(tab.type, 'reader-unloaded');
+			assert.isTrue(tab.pinned);
+			assert.equal(tabIndex, 0);
+		});
+
+		it("should scroll pinned tabs with the other tabs when they'd fill the tab bar", async function () {
+			let win3 = await loadZoteroPane();
+			try {
+				win3.resizeTo(700, 600);
+				let tabs3 = win3.Zotero_Tabs;
+				for (let i = 0; i < 12; i++) {
+					let id = tabs3.addLibraryTab({ select: false });
+					if (i < 8) {
+						tabs3.setPinned(id, true);
+					}
+				}
+				// The tabs menu button stays in the window
+				let button = win3.document.getElementById('zotero-tb-tabs-menu');
+				await waitForCallback(
+					() => button.getBoundingClientRect().right <= win3.innerWidth,
+					50,
+					20
+				);
+			}
+			finally {
+				win3.close();
+			}
+		});
+
 		it("should restore a quick search with conditions as a search", async function () {
 			let { view } = await addLibraryTab({
 				collections: ['C' + collection2.id],
@@ -328,6 +428,7 @@ describe("Zotero_Tabs", function() {
 			});
 			
 			it("should import from the clipboard into the tab it was started from", async function () {
+				requireBundledFiles();
 				Zotero.Utilities.Internal.copyTextToClipboard(
 					"@article{tab_test_nodate,\n	title = {Tab Import},\n}"
 				);
@@ -844,6 +945,48 @@ describe("Zotero_Tabs", function() {
 			}
 		});
 		
+		it("should reopen a window with its pinned tab", async function () {
+			let win3 = await loadZoteroPane();
+			let tabs3 = win3.Zotero_Tabs;
+			let pinnedID = tabs3.addLibraryTab({ select: false });
+			tabs3.setPinned(pinnedID, true);
+			let openWindows = Zotero.getMainWindows();
+			win3.close();
+			await waitForCallback(() => win3.closed, 50, 20);
+
+			await tabs.undoClose();
+			let newWin;
+			try {
+				await waitForCallback(
+					() => (newWin = Zotero.getMainWindows().find(x => !openWindows.includes(x)))
+						&& newWin.ZoteroPane.libraryView?.loaded,
+					100,
+					20
+				);
+				assert.deepEqual(newWin.Zotero_Tabs._tabs.map(tab => !!tab.pinned), [true, false]);
+			}
+			finally {
+				newWin?.close();
+			}
+		});
+
+		it("should restore a window with a setting it cleared", async function () {
+			let newWin;
+			try {
+				Zotero.Prefs.setForWindow(win2, 'pinnedPane', undefined);
+				Zotero.Prefs.setForWindow(win, 'pinnedPane', 'tags');
+				// As saved in session.json
+				let windowSettings = JSON.parse(JSON.stringify(zp2.getWindowSettings()));
+				newWin = Zotero.openMainWindow({ windowSettings });
+				await waitForCallback(() => newWin.ZoteroPane?.libraryView?.loaded, 100, 20);
+				assert.isUndefined(Zotero.Prefs.getForWindow(newWin, 'pinnedPane'));
+			}
+			finally {
+				newWin?.close();
+				Zotero.Prefs.setForWindow(win, 'pinnedPane', undefined);
+			}
+		});
+		
 		it("should open each selected collection in a tab of its own in a new window", async function () {
 			let otherCollection = await createDataObject('collection');
 			await zp2.collectionsView.restoreSelection([collection.treeViewID, otherCollection.treeViewID]);
@@ -990,6 +1133,30 @@ describe("Zotero_Tabs", function() {
 			}
 			finally {
 				win2.Zotero_Tabs.close(newID);
+			}
+		});
+
+		it("should keep a pinned tab dropped on another window's tab bar", async function () {
+			let { id } = await addLibraryTab();
+			tabs.setPinned(id, true);
+			try {
+				let tabNode = win.document.querySelector(`#tab-bar-container .tabs-wrapper .tab[data-id="${id}"]`);
+				let tabBar = win2.document.querySelector('#tab-bar-container .tabs-wrapper .tabs');
+				let dataTransfer = new win.DataTransfer();
+				let fire = (target, type) => target.dispatchEvent(
+					new target.ownerDocument.defaultView.DragEvent(type, { bubbles: true, cancelable: true, dataTransfer })
+				);
+				let count = win2.Zotero_Tabs._tabs.length;
+				fire(tabNode, 'dragstart');
+				fire(tabBar, 'dragover');
+				fire(tabBar, 'drop');
+				fire(tabNode, 'dragend');
+				await Zotero.Promise.delay(200);
+				assert.isTrue(tabs._getTab(id).tab.pinned);
+				assert.equal(win2.Zotero_Tabs._tabs.length, count);
+			}
+			finally {
+				tabs.setPinned(id, false);
 			}
 		});
 
@@ -1424,6 +1591,52 @@ describe("Zotero_Tabs", function() {
 			finally {
 				uiIsReadySpy.restore();
 				newWin?.close();
+			}
+		});
+		
+		it("should raise a reader's window only when it's the front main window", async function () {
+			let attachment = await importPDFAttachment(item);
+			let readerState = {
+				type: 'pane',
+				geometry: {},
+				tabs: [
+					{
+						type: 'reader',
+						title: item.getField('title'),
+						selected: true,
+						data: { itemID: attachment.id }
+					}
+				]
+			};
+			let readerWin, libraryWin;
+			try {
+				readerWin = Zotero.openMainWindow({ sessionState: readerState });
+				let reader;
+				await waitForCallback(() => {
+					reader = Zotero.Reader.getByTabID(readerWin.Zotero_Tabs?.selectedID);
+					return reader;
+				}, 100, 50);
+				await reader._initPromise;
+				let raiseRequests = 0;
+				readerWin.addEventListener('framefocusrequested', () => raiseRequests++, true);
+				
+				await reader.focus();
+				assert.isAbove(raiseRequests, 0);
+				
+				// As when a window is restored after this one at startup
+				libraryWin = Zotero.openMainWindow({
+					sessionState: { type: 'pane', geometry: {}, tabs: [] }
+				});
+				await waitForCallback(() => libraryWin.ZoteroPane?.libraryView?.loaded, 100, 10);
+				raiseRequests = 0;
+				await reader.focus();
+				assert.equal(raiseRequests, 0);
+				// Focus still goes to the reader for when its window is brought forward
+				assert.equal(readerWin.document.activeElement, reader._iframe);
+			}
+			finally {
+				readerWin?.close();
+				libraryWin?.close();
 			}
 		});
 		

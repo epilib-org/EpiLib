@@ -7258,7 +7258,8 @@ var ZoteroPane = new function () {
 		if (!(name in _windowSettings.prefs)) {
 			_windowSettings.prefs[name] = Zotero.Prefs.get(name);
 		}
-		return structuredClone(_windowSettings.prefs[name]);
+		let value = _windowSettings.prefs[name];
+		return value === null ? undefined : structuredClone(value);
 	};
 	
 	/**
@@ -7270,7 +7271,9 @@ var ZoteroPane = new function () {
 	 */
 	this.setWindowSetting = function (name, value) {
 		observeWindowSettingPref(name);
-		_windowSettings.prefs[name] = structuredClone(value);
+		// A cleared setting is stored as null, since undefined doesn't survive the JSON of a
+		// saved window state
+		_windowSettings.prefs[name] = value === undefined ? null : structuredClone(value);
 		// Pref observers run synchronously within the write, so other windows see the flag and
 		// keep their own values
 		Zotero.Prefs.settingForWindow = true;
@@ -7332,7 +7335,7 @@ var ZoteroPane = new function () {
 			if (Zotero.Prefs.settingForWindow) {
 				return;
 			}
-			_windowSettings.prefs[name] = Zotero.Prefs.get(name);
+			_windowSettings.prefs[name] = Zotero.Prefs.get(name) ?? null;
 			dispatchWindowSettingChange(name);
 		}));
 	}
@@ -7456,12 +7459,18 @@ var ZoteroPane = new function () {
 	this.updateLayoutConstraints = function () {
 		var paneStack = document.getElementById("zotero-pane-stack");
 		if (paneStack.hidden) return;
-		// A window without a library view is only as wide as the tab bar requires
+		// A window without a library view needs room for the tabs deck and the context pane
 		if (!this.libraryView) {
+			let isContextPaneShown = Zotero.Prefs.get('layout') !== 'stacked'
+				&& !document.getElementById('zotero-context-pane').hasAttribute('collapsed');
+			// Keep in sync with abstracts/variables.scss > $min-width-context-pane + $width-sidenav
+			let contextPaneMinWidth = isContextPaneShown ? 320 + 37 : 0;
 			document.documentElement.style.setProperty('--width-of-fixed-components', '0px');
 			document.documentElement.style.setProperty('--height-of-fixed-components', '0px');
+			document.documentElement.style.setProperty('--width-of-context-pane', `${contextPaneMinWidth}px`);
 			return;
 		}
+		document.documentElement.style.removeProperty('--width-of-context-pane');
 
 		var titlebar = document.getElementById('zotero-title-bar');
 		var trees = this.libraryView.getElement('zotero-trees');

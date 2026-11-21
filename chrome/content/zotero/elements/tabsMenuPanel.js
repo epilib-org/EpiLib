@@ -185,8 +185,8 @@
 				closeButton.appendChild(closeIcon);
 				closeButton.addEventListener("click", this._handleCloseClick);
 
-				// Tabs that can't be closed have no close button
-				if (!tab.closable) {
+				// Pinned tabs and tabs that can't be closed have no close button
+				if (!tab.closable || tab.pinned) {
 					closeButton.hidden = true;
 				}
 
@@ -599,7 +599,9 @@
 			event.preventDefault();
 			let tabId = event.dataTransfer.getData("zotero/tab");
 			let { tab: rowTab } = Zotero_Tabs._getTab(rowTabId);
-			if (!tabId || !rowTab?.movable) {
+			let { tab } = Zotero_Tabs._getTab(tabId);
+			// Pinned tabs move among the pinned tabs, and other tabs among the tabs after them
+			if (!tab || !rowTab?.movable || !!rowTab.pinned != !!tab.pinned) {
 				return false;
 			}
 			if (row.getAttribute("id") == "zotero-tabs-menu-dragged") {
@@ -623,7 +625,6 @@
 			let row = event.target.closest(".row");
 			let tabId = event.dataTransfer.getData("zotero/tab");
 			let rowIndex = parseInt(row.getAttribute("index"));
-			if (rowIndex < Zotero_Tabs._getFirstUnpinnedIndex()) return;
 			Zotero_Tabs.move(tabId, rowIndex);
 		};
 

@@ -484,6 +484,19 @@ async function waitForScrollToPane(itemDetails, paneID) {
 	await waitForFrames(5);
 }
 
+/**
+ * Get the element of a tree row, scrolling the row into view first, since rows outside the
+ * viewport of a virtualized tree have no element
+ *
+ * @param {LibraryTree} view
+ * @param {Number} row
+ * @return {Element}
+ */
+function getVisibleRowElement(view, row) {
+	view.ensureRowIsVisible(row);
+	return view.tree.getRowElement(row);
+}
+
 function clickOnItemsRow(win, itemsView, row) {
 	itemsView._treebox.scrollToRow(row);
 	let elem = itemsView.domEl.querySelector(`#${itemsView.id}-row-${row}`);
@@ -1130,6 +1143,23 @@ var generateTranslatorExportData = async function generateTranslatorExportData(l
 
 
 /**
+ * Fail the current suite or test right away when bundled translators and styles weren't installed
+ * (runtests.sh -b)
+ *
+ * Call from a before() hook for a whole suite, or at the start of an it().
+ */
+function requireBundledFiles() {
+	// Check the command-line option rather than Zotero.skipBundledFiles, which resetDB() can
+	// also set
+	let { CommandLineOptions } = ChromeUtils.importESModule(
+		"chrome://zotero/content/modules/commandLineOptions.mjs"
+	);
+	if (CommandLineOptions.skipBundledFiles) {
+		throw new Error("Requires bundled translators and styles -- rerun without -b");
+	}
+}
+
+/**
  * Build a dummy translator that can be passed to Zotero.Translate
  */
 function buildDummyTranslator(translatorType, code, info={}) {
@@ -1321,6 +1351,60 @@ async function getImageBlob() {
 		array[i] = imageData.charCodeAt(i);
 	}
 	return new Blob([array], { type: 'image/png' });
+}
+
+
+/**
+ * Build a plugin XPI and install it via the addon manager
+ *
+ * @param {Object} [options]
+ * @param {String} [options.id]
+ * @param {String} [options.name]
+ * @param {String} [options.version]
+ * @param {String} [options.strictMaxVersion]
+ * @param {String} [options.bootstrap] - Contents of bootstrap.js
+ * @param {Object<String, String>} [options.files] - Additional files, keyed by relative path
+ * @return {Promise<AddonWrapper>}
+ */
+async function installTestPlugin(options = {}) {
+	var { AddonManager } = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
+	/* eslint-disable camelcase */
+	var manifest = {
+		manifest_version: 2,
+		name: options.name || 'Test Plugin',
+		version: options.version || '1.0',
+		applications: {
+			zotero: {
+				id: options.id || 'test-' + Zotero.Utilities.randomString(6).toLowerCase() + '@zotero.org',
+				update_url: 'https://www.zotero.org/tests/update.json',
+				strict_min_version: '6.999',
+				strict_max_version: options.strictMaxVersion || '999.*'
+			}
+		}
+	};
+	/* eslint-enable camelcase */
+	var dir = await getTempDirectory();
+	await IOUtils.writeUTF8(PathUtils.join(dir, 'manifest.json'), JSON.stringify(manifest));
+	await IOUtils.writeUTF8(
+		PathUtils.join(dir, 'bootstrap.js'),
+		options.bootstrap
+			|| 'function install() {}\n'
+				+ 'function startup() {}\n'
+				+ 'function shutdown() {}\n'
+				+ 'function uninstall() {}\n'
+	);
+	for (let [name, contents] of Object.entries(options.files || {})) {
+		let path = PathUtils.join(dir, ...name.split('/'));
+		await IOUtils.makeDirectory(PathUtils.parent(path), { createAncestors: true });
+		await IOUtils.writeUTF8(path, contents);
+	}
+	var xpiPath = dir + '.xpi';
+	await Zotero.File.zipDirectory(dir, xpiPath);
+	var install = await AddonManager.getInstallForFile(
+		Zotero.File.pathToFile(xpiPath),
+		'application/x-xpinstall'
+	);
+	return install.install();
 }
 
 

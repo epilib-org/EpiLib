@@ -51,6 +51,8 @@ general-cancel = Cancel
 cancel-button =
     .label = { general-cancel }
 general-show-in-library = Show in Library
+general-open-in-new-tab = Open in New Tab
+general-open-in-new-window = Open in New Window
 general-restartApp = Restart { -app-name }
 general-restartInTroubleshootingMode = Restart in Troubleshooting Mode
 general-save = Save
@@ -471,6 +473,10 @@ import-online-connection-error = { -app-name } could not connect to { $targetApp
 tab-title-multiple-collections = Multiple
 tabs-reopen-closed-window =
     .label = Reopen Closed Window
+tabs-pin =
+    .label = Pin Tab
+tabs-unpin =
+    .label = Unpin Tab
 
 items-table-cell-notes =
     .aria-label = { $count ->
@@ -786,6 +792,10 @@ context-notes-search =
     .placeholder = Search Notes
 context-notes-return-button =
     .aria-label = { general-go-back }
+context-notes-open-in-new-tab =
+    .label = { general-open-in-new-tab }
+context-notes-open-in-new-window =
+    .label = { general-open-in-new-window }
 
 new-collection = New Collection…
 menu-new-collection =
@@ -1212,6 +1222,8 @@ banner-close-button =
 
 plugins-blocked-plugin =
     .message = This plugin has been disabled by { -app-name }.
+plugins-blocked-plugin-reason =
+    .message = This plugin has been disabled by { -app-name }: { $reason }
 
 data-dir-unsupported-storage = This can happen if the { -app-name } data directory is in a cloud storage folder (OneDrive, Dropbox, etc.) or on a network share.
 data-dir-not-writable = { -app-name } can’t write to { $path }.
@@ -1370,6 +1382,30 @@ undo-action-unrelate-items = Unrelate Items
 undo-action-merge-items = { $count ->
     [one] Merge Item
    *[other] Merge { $count } Items
+}
+undo-action-add-annotation = { $count ->
+    [1] Add Annotation
+    [one] Add { $count } Annotation
+   *[other] Add { $count } Annotations
+}
+undo-action-edit-annotation = { $count ->
+    [1] Edit Annotation
+    [one] Edit { $count } Annotation
+   *[other] Edit { $count } Annotations
+}
+undo-action-delete-annotation = { $count ->
+    [1] Delete Annotation
+    [one] Delete { $count } Annotation
+   *[other] Delete { $count } Annotations
+}
+undo-action-convert-annotation = { $count ->
+    [1] Convert Annotation
+    [one] Convert { $count } Annotation
+   *[other] Convert { $count } Annotations
+}
+undo-action-merge-annotations = { $count ->
+    [one] Merge { $count } Annotation
+   *[other] Merge { $count } Annotations
 }
 menu-edit-undo-action = Undo { $action }
 menu-edit-redo-action = Redo { $action }

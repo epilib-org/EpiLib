@@ -198,6 +198,10 @@ function onUnload() {
 }
 
 function cleanupBeforeDialogClosing() {
+	if (IOManager._notifierID) {
+		Zotero.Notifier.unregisterObserver(IOManager._notifierID);
+		IOManager._notifierID = null;
+	}
 	if (!currentLayout || !libraryLayout) return;
 	
 	// Save window params for current layout mode so we can restore it on next dialog open
@@ -216,9 +220,9 @@ function cleanupBeforeDialogClosing() {
 	// Only library mode in annotations dialog
 	if (!DIALOG_STATE.isAddingAnnotations()) {
 		Zotero.Prefs.set("integration.citationDialogLastUsedMode", currentLayout.type);
-		if (currentLayout.type == "library") {
-			Zotero.Prefs.set("integration.citationDialogCollectionLastSelected", libraryLayout.collectionsView.selectedTreeRow.id);
-		}
+	}
+	if (currentLayout.type == "library") {
+		Zotero.Prefs.set("integration.citationDialogCollectionLastSelected", libraryLayout.collectionsView.selectedTreeRow.id);
 	}
 	libraryLayout.collectionsView.unregister();
 	libraryLayout.itemsView.unregister();
@@ -240,6 +244,7 @@ async function setDialogType(type) {
 	if (DIALOG_STATE.loaded && io.disableDialogTypeSwitch) return;
 	// If there is a running search, do nothing to avoid window resizing conflicts
 	if (SearchHandler.searching) return;
+	let previousType = DIALOG_STATE.type;
 	DIALOG_STATE.type = type;
 	document.documentElement.setAttribute("dialog-type", DIALOG_STATE.type);
 
@@ -295,6 +300,8 @@ async function setDialogType(type) {
 	}
 	
 	if (DIALOG_STATE.loaded) {
+		// Prevent focus handler from interfering - input is explicitly refocused below
+		IOManager._noRefocusing = true;
 		// Completely reset itemTree to have right dragAndDrop, regularOnly, multiselect behavior
 		libraryLayout.itemsView.unregister();
 		_id("zotero-items-tree").replaceChildren();
@@ -302,11 +309,24 @@ async function setDialogType(type) {
 		await libraryLayout._initItemTree();
 		libraryLayout._onCollectionSelection();
 
-		// Rerun the search and update bubble-input
+		// When switching from annotations to citation dialog type, the annotations are carried over
+		// as their top-level items with page locators, so they can be rearranged
+		// or previewed like any other citation.
+		let bubbleItems = [];
+		if (previousType == "annotations" && DIALOG_STATE.isCitingItems()) {
+			bubbleItems = CitationDataManager.buildParentCitationBubbleItems();
+		}
+		CitationDataManager.clearAll();
+		await CitationDataManager.addItems({ bubbleItems });
+		IOManager.updateBubbleInput();
+		IOManager._noRefocusing = false;
+		_id("bubble-input").refocusInput({ focusLast: true });
+		// The new itemTree highlighted rows of the previous citation when it was initialized
+		libraryLayout.refreshItemsView();
+
+		// Rerun the search
 		SearchHandler.clearNonLibraryItemsCache();
 		currentLayout.search(SearchHandler.searchValue);
-		CitationDataManager.clearAll();
-		IOManager.updateBubbleInput();
 	}
 }
 
@@ -1022,11 +1042,11 @@ class LibraryLayout extends Layout {
 
 	// Highlight/de-highlight selected rows
 	async _refreshItemsViewHighlightedRows() {
-		let selectedIDs = CitationDataManager.getCitedLibraryItemIDs();
 		// Wait for the tree to fully load to avoid a logged error that the tree is undefined
 		while (!this.itemsView.tree) {
 			await Zotero.Promise.delay(10);
 		}
+		let selectedIDs = CitationDataManager.getCitedLibraryItemIDs();
 		this.itemsView.setHighlightedRows([...selectedIDs]);
 	}
 
@@ -1276,6 +1296,8 @@ const IOManager = {
 		doc.addEventListener("focus-item-tree", ({ detail }) => this.focusItemTree(detail));
 		// update bubbles after citation item is updated by itemDetails popup
 		doc.addEventListener("item-details-updated", () => this.updateBubbleInput());
+		// add the page suggested from an opened reader tab as a locator
+		doc.addEventListener("page-suggestion-accepted", ({ detail: { page } }) => this._applyPageSuggestion(page));
 
 		doc.addEventListener("DOMMenuBarActive", () => this._handleMenuBarAppearance());
 
@@ -1312,6 +1334,9 @@ const IOManager = {
 		_id("bubble-input").addEventListener("focusout", event => this._clearJustAddedBubbles(event));
 		// handle cmd/ctrl-z pressed from the input to undo added locator to a just-added bubble
 		_id("bubble-input").addEventListener("keydown", event => this._handleInputUndo(event));
+
+		// keep the suggested page in sync with the page displayed by the reader tab
+		this._notifierID = Zotero.Notifier.registerObserver(this, ['file'], 'citationDialog');
 	},
 
 	// switch between list and library modes
@@ -1436,6 +1461,9 @@ const IOManager = {
 
 		// Add entries into the citation with the current locator if specified
 		let bubbleItems = items.map(item => BubbleItem.fromItem(item));
+		// Whether to suggest the page of a reader tab with an attachment of the
+		// added item as a locator once the bubble is added
+		let suggestPage = false;
 		if (locator) {
 			for (let bubbleItem of bubbleItems) {
 				bubbleItem.locator = locator.locator;
@@ -1452,6 +1480,8 @@ const IOManager = {
 			// that, the user presumably knows about the shortcut
 			_id("bubble-input").showJustAddedPlaceholder = DIALOG_STATE.isCitingItems()
 				&& this._timesItemsAdded < 1;
+			// If the item is opened in a reader tab, its page is suggested as a locator
+			suggestPage = DIALOG_STATE.isCitingItems();
 		}
 		else {
 			// A multi-item add doesn't enter locator-typing mode, so typed text
@@ -1468,12 +1498,14 @@ const IOManager = {
 		this.updateBubbleInput();
 
 		// Show guidance panel on the first run
+		let guidanceShown = false;
 		if (DIALOG_STATE.isCitingItems() && !Zotero.Prefs.get("firstRunGuidanceShown.citationDialog")) {
 			doc.querySelector(".bubble").id = "first-bubble";
 			// Center the panel on the first bubble
 			let width = doc.querySelector(".bubble").getBoundingClientRect().width;
 			doc.querySelector("guidance-panel").setAttribute("x", Math.round(width / 2));
 			IOManager.showFirstRunDialog();
+			guidanceShown = true;
 		}
 		// Render the preview before refreshing the list so resizeWindow measures its real height;
 		// otherwise the debounced render lands after the resize and overflows the window.
@@ -1482,6 +1514,18 @@ const IOManager = {
 		await currentLayout.refreshItemsList();
 		if (!noInputRefocus) {
 			_id("bubble-input").refocusInput();
+		}
+		// Suggest the page of the opened document, unless the first run guidance panel
+		// is already displayed next to the same bubble
+		if (suggestPage && !guidanceShown) {
+			let page = await Helpers.getOpenTabPage(items[0]);
+			// The bubble the locator would be added to may be gone by now
+			if (page && this._justAddedBubbles) {
+				PopupsHandler.openPageSuggestion({
+					page,
+					anchor: _id("bubble-input").getCurrentInput()
+				});
+			}
 		}
 		dialogNotPristine();
 	},
@@ -1912,6 +1956,33 @@ const IOManager = {
 
 	_processNumericLocatorInputDebounced: Zotero.Utilities.debounce(() => IOManager._processNumericLocatorInput(), NUMERIC_LOCATOR_TIMEOUT),
 
+	// The reader fires 'pageChange' for its attachment whenever the displayed page changes.
+	// If that attachment belongs to the item whose page is being suggested, refresh the suggestion.
+	async notify(action, type, ids) {
+		if (type != 'file' || action != 'pageChange') return;
+		if (!this._justAddedBubbles || !PopupsHandler.isPageSuggestionOpen()) return;
+		let item = this._justAddedBubbles[0].item;
+		let attachmentIDs = item.getAttachments();
+		if (!ids.some(id => attachmentIDs.includes(id))) return;
+		let page = await Helpers.getOpenTabPage(item);
+		// The suggestion may have been accepted or dismissed while the page was being fetched
+		if (!PopupsHandler.isPageSuggestionOpen()) return;
+		PopupsHandler.updatePageSuggestion(page);
+	},
+
+	// Add the page suggested from an opened reader tab as a locator of the just-added bubble
+	_applyPageSuggestion(page) {
+		if (!this._justAddedBubbles) return;
+		for (let bubbleItem of this._justAddedBubbles) {
+			bubbleItem.locator = page;
+			bubbleItem.label = "page";
+		}
+		// Clearing just-added bubbles refreshes bubble-input
+		this._clearJustAddedBubbles();
+		_id("bubble-input").refocusInput();
+		dialogNotPristine();
+	},
+
 	// Clear the record of which bubbles were just added. If a locator is typed
 	// and Enter is presses, just-added bubbles get that locator.
 	_clearJustAddedBubbles(event) {
@@ -1928,6 +1999,8 @@ const IOManager = {
 		// clear just added bubbles and update bubble input to reflect that
 		this._justAddedBubbles = null;
 		_id("bubble-input").showJustAddedPlaceholder = false;
+		// the page suggestion has no bubble to apply the locator to anymore
+		PopupsHandler.closePageSuggestion();
 		this.updateBubbleInput();
 	},
 
@@ -2299,6 +2372,30 @@ const CitationDataManager = {
 		if (io.sortable) {
 			io.citation.properties.unsorted = !_id("keepSorted").checked;
 		}
+	},
+
+	// Build bubble items for the top-level parent items of the annotations in the citation,
+	// cited at the annotation's page. Annotations whose attachment has no parent item are dropped,
+	// and annotations of the same item on the same page are merged into one bubble item.
+	buildParentCitationBubbleItems() {
+		let bubbleItems = [];
+		let addedKeys = new Set();
+		for (let { item } of this.items) {
+			// For an annotation of a standalone attachment, the top-level item is the attachment itself
+			let topLevelItem = item.topLevelItem;
+			if (!topLevelItem.isRegularItem()) continue;
+			let locator = (item.annotationPageLabel || "").trim();
+			let key = `${topLevelItem.id}|${locator}`;
+			if (addedKeys.has(key)) continue;
+			addedKeys.add(key);
+			let bubbleItem = BubbleItem.fromItem(topLevelItem);
+			if (locator) {
+				bubbleItem.locator = locator;
+				bubbleItem.label = "page";
+			}
+			bubbleItems.push(bubbleItem);
+		}
+		return bubbleItems;
 	},
 
 	// Resorts the items in the citation

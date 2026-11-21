@@ -560,12 +560,13 @@ class CollectionViewItemTreeRowProvider extends ItemTreeRowProvider {
 			
 			// Toggle all open containers closed and open to refresh child items
 			var t = new Date();
-			for (let i = this.rows.length - 1; i >= 0; i--) {
-				if (this.isContainerOpen(i)) {
-					this._refreshContainer(i, true);
+			this._batchRowChanges(() => {
+				for (let i = this.rows.length - 1; i >= 0; i--) {
+					if (this.isContainerOpen(i)) {
+						this._refreshContainer(i);
+					}
 				}
-			}
-			this.refreshRowMap();
+			});
 			Zotero.debug(`Refreshed open parents in ${new Date() - t} ms`);
 
 			if (this._showSectionHeaders) {
@@ -598,20 +599,21 @@ class CollectionViewItemTreeRowProvider extends ItemTreeRowProvider {
 			return;
 		}
 
-		for (let i = 0; i < this.rowCount; i++) {
-			if (!this.isContainer(i) || this.isContainerOpen(i)) {
-				continue;
+		this._batchRowChanges(() => {
+			for (let i = 0; i < this.rowCount; i++) {
+				if (!this.isContainer(i) || this.isContainerOpen(i)) {
+					continue;
+				}
+				let item = this.getRow(i).ref;
+				let attachments = item.isRegularItem() ? item.getAttachments() : [];
+				// expand item row if it is a parent of a match
+				// OR if it has a child that is a parent of a match
+				let shouldBeOpened = searchParentIDs.has(item.id) || attachments.some(id => searchParentIDs.has(id));
+				if (shouldBeOpened) {
+					this._toggleOpenState(i);
+				}
 			}
-			let item = this.getRow(i).ref;
-			let attachments = item.isRegularItem() ? item.getAttachments() : [];
-			// expand item row if it is a parent of a match
-			// OR if it has a child that is a parent of a match
-			let shouldBeOpened = searchParentIDs.has(item.id) || attachments.some(id => searchParentIDs.has(id));
-			if (shouldBeOpened) {
-				this._toggleOpenState(i, true);
-			}
-		}
-		this.refreshRowMap();
+		});
 	}
 
 	expandMatchParents() {
@@ -678,6 +680,8 @@ class CollectionViewItemTreeRowProvider extends ItemTreeRowProvider {
 			type == 'collection-item' ? ids[0].split('-')[1] : ids[0]
 		];
 
+		// New items are selected, and clear the quick search, only in the active window
+		let inActiveWindow = Zotero.getActiveZoteroPane()?.itemsView == this.itemTree;
 		let selectInActiveWindow = false;
 		let restoreSelection = true;
 		let restoreScroll = true;
@@ -811,7 +815,7 @@ class CollectionViewItemTreeRowProvider extends ItemTreeRowProvider {
 		else if ((collectionTreeRows.length > 1 || collectionTreeRows.some(row => row.isSearchMode()))
 				&& ['item', 'collection', 'search'].includes(type) && ['add', 'modify'].includes(action)) {
 			// If search mode, just re-run search
-			if (action == 'add' && this.hasQuickSearch()) {
+			if (action == 'add' && inActiveWindow && this.hasQuickSearch()) {
 				// For item adds, clear the quick search, unless all the new items have
 				// skipSelect or are child items
 				if (!items) items = Zotero.Items.get(ids);
@@ -862,12 +866,12 @@ class CollectionViewItemTreeRowProvider extends ItemTreeRowProvider {
 					// If item moved from top level to under another item, remove the old row
 					if (parentIndex == -1 && parentItemID) {
 						// Close container to remove any sub-items
-						this._closeContainer(row, true);
+						this._closeContainer(row);
 						this._removeRow(row);
 					}
 					// If moved from under another item to top level, remove old row and add new one
 					else if (parentIndex != -1 && !parentItemID) {
-						this._closeContainer(row, true);
+						this._closeContainer(row);
 						this._removeRow(row, true);
 
 						let beforeRow = this.getRowCount();
@@ -1007,7 +1011,7 @@ class CollectionViewItemTreeRowProvider extends ItemTreeRowProvider {
 
 			var singleSelect = false;
 			// If adding a single top-level item and this is the active window, select it
-			if (action == 'add') {
+			if (action == 'add' && inActiveWindow) {
 				if (ids.length == 1) {
 					singleSelect = ids[0];
 				}
@@ -1603,11 +1607,11 @@ class CollectionViewItemTree extends ItemTree {
 					return false;
 				}
 			}
-			// Into blank space, require a row that can receive items -- a collection or a
-			// library root. A saved search or My Publications can't, and checking all
-			// selected rows keeps this order-independent for a mixed collection + search
-			// selection.
-			else if (!this.collectionTreeRows.some(r => r.isCollection() || r.isLibrary(true))) {
+			// Into blank space, require the new item to belong in every selected row --
+			// a library root, a collection, or Unfiled Items
+			else if (!this.collectionTreeRows.every(
+				r => r.isLibrary(true) || r.isCollection() || r.isUnfiled()
+			)) {
 				return false;
 			}
 

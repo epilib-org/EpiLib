@@ -159,6 +159,14 @@ Zotero.Streamer_Module.prototype = {
 			);
 		}
 		
+		if (!this._subscriptions.has('plugin-blocklist')) {
+			subscriptionsToAdd.push(
+				{
+					topics: ['plugin-blocklist']
+				}
+			);
+		}
+		
 		if (subscriptionsToAdd.length) {
 			let data = JSON.stringify({
 				action: 'createSubscriptions',
@@ -184,7 +192,8 @@ Zotero.Streamer_Module.prototype = {
 	
 	
 	_isEnabled: function () {
-		// Keep public translator/style notifications, never account subscriptions.
+		// Keep public update notifications, never account subscriptions.
+		// When scraper updates are disabled, the plugin blocklist uses HTTP polling.
 		return Zotero.Prefs.get('streaming.enabled')
 			&& Zotero.Prefs.get('automaticScraperUpdates');
 	},
@@ -193,6 +202,14 @@ Zotero.Streamer_Module.prototype = {
 	_socketOpen: function () {
 		return this._socket && (this._socket.readyState == this._socket.OPEN
 				|| this._socket.readyState == this._socket.CONNECTING);
+	},
+	
+	
+	/**
+	 * Whether the connection is open and ready to receive notifications
+	 */
+	isConnected: function () {
+		return this._ready && !!this._socket && this._socket.readyState == this._socket.OPEN;
 	},
 	
 	
@@ -221,6 +238,7 @@ Zotero.Streamer_Module.prototype = {
 			if (data.event == "connected") {
 				this._ready = true;
 				this._update();
+				Zotero.Plugins.onStreamerConnected();
 			}
 			else {
 				this._reconnectGenerator = null;
@@ -232,6 +250,9 @@ Zotero.Streamer_Module.prototype = {
 						}
 						else if (s.topics && s.topics.includes('styles')) {
 							this._subscriptions.add('bundled-files');
+						}
+						else if (s.topics && s.topics.includes('plugin-blocklist')) {
+							this._subscriptions.add('plugin-blocklist');
 						}
 					}
 					
@@ -247,6 +268,9 @@ Zotero.Streamer_Module.prototype = {
 						else if (s.topics && s.topics.includes('styles')) {
 							this._subscriptions.delete('bundled-files');
 						}
+						else if (s.topics && s.topics.includes('plugin-blocklist')) {
+							this._subscriptions.delete('plugin-blocklist');
+						}
 					}
 				}
 				// Library added or removed
@@ -260,6 +284,9 @@ Zotero.Streamer_Module.prototype = {
 					// Update translators and styles
 					if (data.topic == 'translators' || data.topic == 'styles') {
 						await Zotero.Schema.onUpdateNotification(data.delay);
+					}
+					else if (data.topic == 'plugin-blocklist') {
+						Zotero.Plugins.onBlocklistUpdateNotification(data.delay);
 					}
 					// Auto-sync
 					else {
@@ -311,6 +338,7 @@ Zotero.Streamer_Module.prototype = {
 			}
 			
 			this._subscriptions.clear();
+			Zotero.Plugins.onStreamerDisconnected();
 			
 			if (this._reconnect) {
 				// Keep retrying on 4429 (Too Many Requests)
