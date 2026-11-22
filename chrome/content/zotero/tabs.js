@@ -393,11 +393,11 @@ var Zotero_Tabs = new function () {
 					: Zotero.getString('tab-title-multiple-collections');
 			},
 			reader: async (tab) => {
-				let item = Zotero.Items.get(tab.data.itemID);
+				let item = await getLoadedItem(tab.data.itemID);
 				return item ? item.getTabTitle() : "";
 			},
 			note: async (tab) => {
-				let item = Zotero.Items.get(tab.data.itemID);
+				let item = await getLoadedItem(tab.data.itemID);
 				if (!item) {
 					return "";
 				}
@@ -898,6 +898,22 @@ var Zotero_Tabs = new function () {
 	};
 	
 	/**
+	 * Get an item once its library's items have loaded, which they may not have yet when tabs
+	 * are restored at startup
+	 *
+	 * @param {Integer} itemID
+	 * @return {Promise<Zotero.Item|false>}
+	 */
+	async function getLoadedItem(itemID) {
+		let { libraryID } = Zotero.Items.getLibraryAndKeyFromID(itemID) || {};
+		if (!libraryID) {
+			return false;
+		}
+		await Zotero.Libraries.get(libraryID).waitForDataLoad('item');
+		return Zotero.Items.get(itemID);
+	}
+	
+	/**
 	 * Create a library tab
 	 *
 	 * @param {Object} [options]
@@ -1006,9 +1022,12 @@ var Zotero_Tabs = new function () {
 	 * @param {Integer} [options.index]
 	 * @param {Boolean} [options.select=true]
 	 * @param {Object} [options.selectOptions] - Passed to select()
+	 * @param {Boolean} [options.pinned]
 	 * @return {String} - The id of the new tab
 	 */
-	this.addLibraryTab = function ({ id, title, icon, state, index, select = true, selectOptions } = {}) {
+	this.addLibraryTab = function ({
+		id, title, icon, state, index, select = true, selectOptions, pinned
+	} = {}) {
 		let data = {};
 		if (icon) {
 			data.icon = icon;
@@ -1016,7 +1035,9 @@ var Zotero_Tabs = new function () {
 		if (state) {
 			data.state = JSON.parse(JSON.stringify(state));
 		}
-		({ id } = this.add({ id, type: 'library-unloaded', title, data, index, select, selectOptions }));
+		({ id } = this.add({
+			id, type: 'library-unloaded', title, data, index, select, selectOptions, pinned
+		}));
 		return id;
 	};
 
@@ -1578,7 +1599,8 @@ var Zotero_Tabs = new function () {
 			tab.type = `${tabContentType}-loading`;
 			// Make sure the loading message is displayed first.
 			// Then, open reader and hide the loading message once it has loaded.
-			ZoteroContextPane.showLoadingMessage(true);
+			// A library view shows its own loading message in the items pane.
+			ZoteroContextPane.showLoadingMessage(tabContentType != 'library');
 			let loadHook = this._getHook(tabContentType, 'load');
 			tab.loadPromise = loadHook(tab, tabIndex, options).then(() => {
 				ZoteroContextPane.showLoadingMessage(false);

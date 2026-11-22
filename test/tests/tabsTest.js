@@ -6,6 +6,9 @@ describe("Zotero_Tabs", function() {
 		doc = win.document;
 		zp = win.ZoteroPane;
 		tabs = win.Zotero_Tabs;
+		// Start with an unpinned library tab, since the tests here pin, move, and close
+		// library tabs themselves
+		tabs.setPinned('zotero-pane', false);
 	});
 	
 	after(function () {
@@ -1651,6 +1654,89 @@ describe("Zotero_Tabs", function() {
 			}
 			finally {
 				newWin?.close();
+			}
+		});
+		
+		it("should pin the library tab of a window opened while no other main window is open", async function () {
+			assert.isFalse(!!win2.Zotero_Tabs._tabs.find(tab => win2.Zotero_Tabs.isLibraryTab(tab.id)).pinned);
+			// As at startup without a saved session
+			let panesStub = sinon.stub(Zotero, 'getZoteroPanes').returns([]);
+			let statesStub = sinon.stub(Zotero.Session, 'getPendingPaneStates').returns([]);
+			let newWin;
+			try {
+				newWin = Zotero.openMainWindow();
+				await waitForCallback(() => newWin.ZoteroPane?.libraryView?.loaded, 100, 10);
+				panesStub.restore();
+				statesStub.restore();
+				assert.isTrue(newWin.Zotero_Tabs._getTab(newWin.Zotero_Tabs.selectedID).tab.pinned);
+			}
+			finally {
+				panesStub.restore();
+				statesStub.restore();
+				newWin?.close();
+			}
+		});
+		
+		it("should pin the library tab of a session saved by an earlier version", async function () {
+			let path = PathUtils.join(Zotero.Profile.dir, 'session.json');
+			let contents = await IOUtils.exists(path) ? await IOUtils.readUTF8(path) : null;
+			let tabs = [{ type: 'library', selected: true }];
+			try {
+				await IOUtils.writeUTF8(path, JSON.stringify({ windows: [{ type: 'pane', tabs }] }));
+				await Zotero.Session.init();
+				assert.isTrue(Zotero.Session.getPendingPaneStates()[0].tabs[0].pinned);
+				
+				// An unpinned library tab in a versioned session stays unpinned
+				await IOUtils.writeUTF8(
+					path,
+					JSON.stringify({ version: 1, windows: [{ type: 'pane', tabs }] })
+				);
+				await Zotero.Session.init();
+				assert.isUndefined(Zotero.Session.getPendingPaneStates()[0].tabs[0].pinned);
+			}
+			finally {
+				if (contents === null) {
+					await IOUtils.remove(path);
+				}
+				else {
+					await IOUtils.writeUTF8(path, contents);
+				}
+				await Zotero.Session.init();
+				for (let state of Zotero.Session.getPendingPaneStates()) {
+					Zotero.Session.removePendingPaneState(state);
+				}
+			}
+		});
+		
+		it("should title a reader tab restored without a title once its library loads", async function () {
+			let group = await createGroup();
+			let attachment = await importPDFAttachment(null, { libraryID: group.libraryID });
+			let title = await attachment.getTabTitle();
+			// As at startup, before the group's items have loaded
+			delete Zotero.Items._objectCache[attachment.id];
+			group._dataLoaded.item = false;
+			delete group._dataLoadedDeferreds.item;
+			let sessionState = {
+				type: 'pane',
+				geometry: {},
+				tabs: [
+					{ type: 'library', selected: true },
+					{ type: 'reader', title: '', data: { itemID: attachment.id } }
+				]
+			};
+			let newWin;
+			try {
+				newWin = Zotero.openMainWindow({ sessionState });
+				await waitForCallback(
+					() => newWin.Zotero_Tabs?._tabs.find(tab => tab.data.itemID == attachment.id)
+						?.title === title,
+					100,
+					20
+				);
+			}
+			finally {
+				newWin?.close();
+				await group.eraseTx();
 			}
 		});
 		
